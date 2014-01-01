@@ -32,6 +32,16 @@ class Contributors extends \Podlove\Modules\Base {
 
 		add_action('podlove_dashboard_statistics', array($this, 'dashboard_statistics_row'));
 
+		\Podlove\Template\Episode::add_accessor(
+			'contributors',
+			function($return, $method_name, $episode, $post) {
+				return array_map(function($contribution) {
+					return new Template\Contributor($contribution->getContributor(), $contribution);
+				}, EpisodeContribution::find_all_by_episode_id($episode->id));
+			},
+			4
+		);
+
 		// register shortcodes
 		new Shortcodes;	
 
