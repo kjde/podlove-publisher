@@ -374,14 +374,11 @@ abstract class Base
 		}
 
 		// @todo this is the wrong place to do this!
+		// The feed password is the only "passphrase" which is saved. It is not encrypted!
+		// However, we keep this function for later use
 		if ( isset( $_REQUEST['passwords'] ) && is_array( $_REQUEST['passwords'] ) ) {
 			foreach ( $_REQUEST['passwords'] as $password ) {
-				if ( isset( $attributes[ $password ] ) && $attributes[ $password ] !== $_REQUEST[ 'field_filler_podlove_feed' ][ $password ] ) {
-					$this->$password = crypt($attributes[ $password ], SECURE_AUTH_SALT);
-				} else {
-					$feed = \Podlove\Model\Feed::find_one_by_id($this->id);
-					$this->$password = $feed->protection_password;
-				}
+				$this->$password = $attributes[ $password ];
 			}
 		}
 		return $this->save();
@@ -434,7 +431,7 @@ abstract class Base
 			;
 			$success = $wpdb->query( $sql );
 			if ( $success ) {
-				$this->id = mysql_insert_id();
+				$this->id = $wpdb->insert_id;
 			}
 		} else {
 			$sql = 'UPDATE ' . self::table_name()
