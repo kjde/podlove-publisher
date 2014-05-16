@@ -19,6 +19,8 @@ class Twitter extends \Podlove\Modules\Base
 
         add_action('podlove_module_was_activated_twitter', array($this, 'was_activated'));
 
+        add_action( 'wp_ajax_podlove-twitter-post', array( $this, 'ajax_post_to_twitter' ) );
+
         if ($this->get_module_option('twitter_auth_key') !== "") {
             add_action('publish_podcast', array($this, 'post_to_twitter_handler'));
             add_action('delayed_twitter_post', array($this, 'post_to_twitter_delayer'), 10, 2);
@@ -113,6 +115,11 @@ class Twitter extends \Podlove\Modules\Base
                 0,
                 STR_PAD_LEFT
             );
+
+            $this->register_option( 'twitter_automatic_announcement', 'checkbox', array(
+                    'label'       => __( 'Automatic Announcement', 'podlove' ),
+                    'description' => 'Announces new podcast episodes on Twitter'
+                ) );
 
             $this->register_option(
                 'twitter_post_delay',
@@ -231,6 +238,34 @@ class Twitter extends \Podlove\Modules\Base
                 )
             );
 
+
+            $this->register_option( 'twitter_manual_post', 'callback', array(
+                    'label' => __( 'Manual Announcement', 'podlove' ),
+                    'callback' => function() {
+                            $episodes = Model\Episode::all();
+                            ?>
+                            <select id="twitter_manual_post_episode_selector" class="chosen">
+                                <?php
+                                foreach ( $episodes as $episode ) {
+                                    $post = get_post( $episode->post_id );
+                                    if ( $post->post_status == 'publish'  )
+                                        echo "<option value='" . $episode->post_id . "'>" . $post->post_title . "</option>";
+                                }
+                                ?>
+                            </select>
+                            <span class="button" id="twitter_manual_post_alpha">
+								Announce, as configured
+								<span class="twitter-post-status-pending">
+									<i class="podlove-icon-spinner rotate"></i>
+								</span>
+								<span class="twitter-post-status-ok">
+									<i class="podlove-icon-ok"></i>
+								</span>
+							</span>
+                        <?php
+                        }
+                ) );
+
         }
     }
 
@@ -300,15 +335,10 @@ class Twitter extends \Podlove\Modules\Base
         return get_post_meta($post_id, '_podlove_episode_was_published_on_twitter', true);
     }
 
-    public function post_to_twitter($post_id, $post_title)
+    public function post_to_twitter($post_id)
     {
 
-        if ($this->is_already_published($post_id)) {
-            return;
-        }
-
-        $episode = Model\Episode::find_one_by_post_id($post_id);
-        $episode_text = $this->get_text_for_episode($episode, $post_id, $post_title);
+        $episode_text = $this->get_text_for_episode( $post_id );
 
         $text = $episode_text['text'];
 
@@ -330,41 +360,54 @@ class Twitter extends \Podlove\Modules\Base
         }
     }
 
-    private function get_text_for_episode($episode, $post_id, $post_title)
-    {
+    public function replace_tags( $post_id ) {
+        $selected_role = $this->get_module_option('twitter_contributor_filter_role');
+        $selected_group = $this->get_module_option('twitter_contributor_filter_group');
 
-        $podcast = Model\Podcast::get_instance();
         $text = $this->get_module_option('twitter_poster_announcement_text');
+        $episode = \Podlove\Model\Episode::find_or_create_by_post_id( $post_id );
+        $podcast = Model\Podcast::get_instance();
+        $post = get_post( $post_id );
+        $post_title = $post->post_title;
 
         $text = str_replace("{podcastTitle}", $podcast->title, $text);
         $text = str_replace("{episodeTitle}", $post_title, $text);
-        $text = str_replace("{episodeLink}", get_permalink($post_id), $text);
+        $text = str_replace("{episodeLink}", get_permalink( $post_id ), $text);
         $text = str_replace("{episodeSubtitle}", $episode->subtitle, $text);
 
         $posted_linked_title = array();
         $start_position = 0;
 
-        while (($position = \Podlove\strpos($text, "{linkedEpisodeTitle}", $start_position, "UTF-8")) !== false) {
-            $length = \Podlove\strlen($post_title, "UTF-8");
+        while ( ($position = \Podlove\strpos( $text, "{linkedEpisodeTitle}", $start_position, "UTF-8" )) !== FALSE ) {
+            $length = \Podlove\strlen( $post_title, "UTF-8" );
             $episode_entry = array(
-                "url" => get_permalink($post_id),
+                "url"  => get_permalink( $post_id ),
                 "text" => $post_title,
-                "pos" => $position,
-                "len" => ($position + $length <= 256) ? $length : 256 - $position
+                "pos"  => $position,
+                "len"  => ($position + $length <= 256) ? $length : 256 - $position
             );
-            array_push($posted_linked_title, $episode_entry);
+            array_push( $posted_linked_title, $episode_entry );
             $start_position = $position + 1;
         }
 
         $text = str_replace("{linkedEpisodeTitle}", $post_title, $text);
-
-        if (\Podlove\strlen($text) > 256) {
-            $text = \Podlove\substr($text, 0, 255) . "…";
-        }
+        $text = apply_filters( 'podlove_twitter_tags', $text, $post_id, $selected_role, $selected_group );
 
         return array(
             'text' => $text,
-            'link_annotation' => $posted_linked_title
+            'posted_linked_title' => $posted_linked_title
+        );
+    }
+
+    private function get_text_for_episode($post_id) {
+        $post = $this->replace_tags( $post_id );
+
+        if ( \Podlove\strlen( $post['text'] ) > 256 )
+            $post['text'] = \Podlove\substr( $post['text'], 0, 255 ) . "…";
+
+        return array(
+            'text' => $post['text'],
+            'link_annotation' => $post['posted_linked_title']
         );
     }
 
@@ -380,34 +423,30 @@ class Twitter extends \Podlove\Modules\Base
         }
     }
 
+    public function ajax_post_to_twitter() {
+        if( !$_REQUEST['post_id'] )
+            return;
+
+        $this->post_to_twitter( $_REQUEST['post_id'] );
+    }
+
     public function post_to_twitter_handler($postid)
     {
+        if ( $this->is_already_published( $post_id ) || $this->get_module_option('twitter_automatic_announcement') !== 'on' )
+            return;
+
         $post_id = $_POST['post_ID'];
-        $post_title = stripcslashes($_POST['post_title']);
 
-        $twitter_post_delay_hours = str_pad($this->get_module_option('twitter_post_delay_hours'), 2, 0, STR_PAD_LEFT);
-        $twitter_post_delay_minutes = str_pad(
-            $this->get_module_option('twitter_post_delay_minutes'),
-            2,
-            0,
-            STR_PAD_LEFT
-        );
+        $twitter_post_delay_hours   = str_pad( $this->get_module_option('twitter_post_delay_hours'), 2, 0, STR_PAD_LEFT );
+        $atwitter_post_delay_minutes = str_pad( $this->get_module_option('twitter_post_delay_minutes'), 2, 0, STR_PAD_LEFT );
 
-        if ($this->get_module_option('twitter_post_delay_hours') !== "00" AND $this->get_module_option(
-                'twitter_post_delay_minutes'
-            ) !== "00"
-        ) {
-            $delayed_time = strtotime($twitter_post_delay_hours . $twitter_post_delay_minutes);
-            $delayed_time_in_seconds = date("H", $delayed_time) * 3600 + date("i", $delayed_time) * 60;
-            wp_schedule_single_event(
-                time() + $delayed_time_in_seconds,
-                "delayed_twitter_post",
-                array($post_id, $post_title)
-            );
-        } else {
-            $this->post_to_twitter($post_id, $post_title);
-        }
+        $delayed_time = strtotime( $twitter_post_delay_hours . $twitter_post_delay_minutes );
+        $delayed_time_in_seconds = date("H", $delayed_time) * 3600 + date("i", $delayed_time) * 60;
+
+        wp_schedule_single_event( time()+$delayed_time_in_seconds, "delayed_twitter_post", array( $post_id ) );
+
     }
+
 
     public function post_to_twitter_delayer($post_id, $post_title)
     {
